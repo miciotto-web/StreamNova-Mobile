@@ -1,0 +1,79 @@
+# --- Build / cache Gradle ---
+.gradle/
+build/
+*/build/
+app/build/
+.kotlin/
+.externalNativeBuild/
+.cxx/
+/captures/
+
+# --- IDE / file locali della macchina ---
+.idea/
+*.iml
+local.properties
+.vscode/
+
+# --- Tooling / agent ---
+.kilo/
+
+# --- Segreti e ambienti ---
+.env
+.env.*
+!.env.example
+
+# --- Artefatti compilati ---
+*.apk
+*.aab
+
+# --- Keystore / certificati di firma ---
+*.jks
+*.keystore
+*.p12
+debug.keystore
+
+# --- Sistema / OS ---
+.DS_Store
+Thumbs.db
+
+# --- Log ---
+*.log
+
+# --- Artefatti locali ---
+scratch/
+androidx/
+
+# --- Vecchio progetto ---
+SnakeNeon/
+
+
+# StreamNova - chiavi di firma e credenziali
+*.jks
+*.keystore
+*.p12
+*.pfx
+
+# File locali contenenti password o segreti
+.env
+.env.*
+!.env.example
+keystore.properties
+signing.properties
+local.properties
+# Extracted JVM/Kotlin dependency classes accidentally written at repository root
+/META-INF/
+/com/
+/io/
+
+# --- Log diagnostici raw (non versionare) ---
+logcat*.txt
+*_logcat*.txt
+hotfix_*.txt
+vv_*.txt
+vv_*.xml
+collaudo_*.txt
+*_log.txt
+p0fix_*.txt
+build_*.err
+p0fix_verify/
+update_popup_test_*/

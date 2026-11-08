@@ -1,0 +1,198 @@
+package com.example.data.local
+
+import android.content.Context
+import androidx.room.Database
+import androidx.room.Room
+import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
+
+@Database(
+  entities = [
+    TmdbResponseCacheEntity::class,
+    CachedMediaItemEntity::class,
+    CatalogProgressEntity::class,
+    EpisodeProgressEntity::class,
+    LastWorkingStreamEntity::class
+  ],
+  version = 10,
+  exportSchema = false
+)
+abstract class StreamNovaDatabase : RoomDatabase() {
+
+  abstract fun tmdbResponseCacheDao(): TmdbResponseCacheDao
+  abstract fun cachedMediaDao(): CachedMediaDao
+  abstract fun catalogProgressDao(): CatalogProgressDao
+  abstract fun episodeProgressDao(): EpisodeProgressDao
+  abstract fun lastWorkingStreamDao(): LastWorkingStreamDao
+
+  companion object {
+
+    /**
+     * v1 -> v2: aggiunta delle colonne che preservano lo stato di visione utente
+     * (stagione/episodio visti) senza perdere preferiti e progressi esistenti.
+     */
+    private val MIGRATION_1_2 = object : Migration(1, 2) {
+      override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE cached_media_items ADD COLUMN lastWatchedSeason INTEGER")
+        db.execSQL("ALTER TABLE cached_media_items ADD COLUMN lastWatchedEpisode INTEGER")
+      }
+    }
+
+    /**
+     * v2 -> v3: aggiunta della tabella `catalog_progress`, che tiene traccia della
+     * prossima pagina da scaricare per OGNI coppia (provider, tipo) e del
+     * `total_pages` dichiarato da TMDB. La migrazione è esplicita (non distruttiva)
+     * così preferiti e progressi di visione restano intatti.
+     */
+    private val MIGRATION_2_3 = object : Migration(2, 3) {
+      override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+          "CREATE TABLE IF NOT EXISTS `catalog_progress` (" +
+            "`providerId` INTEGER NOT NULL, " +
+            "`mediaType` TEXT NOT NULL, " +
+            "`nextPage` INTEGER NOT NULL, " +
+            "`totalPages` INTEGER NOT NULL, " +
+            "`updatedAt` INTEGER NOT NULL, " +
+            "PRIMARY KEY(`providerId`, `mediaType`))"
+        )
+      }
+    }
+
+    /**
+     * v3 -> v4: aggiunta della tabella `episode_progress` per la persistenza del
+     * progresso di visione individuale di ciascun episodio di una serie.
+     */
+    private val MIGRATION_3_4 = object : Migration(3, 4) {
+      override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+          "CREATE TABLE IF NOT EXISTS `episode_progress` (" +
+            "`mediaId` TEXT NOT NULL, " +
+            "`seasonNumber` INTEGER NOT NULL, " +
+            "`episodeNumber` INTEGER NOT NULL, " +
+            "`progressMs` INTEGER NOT NULL, " +
+            "`durationMs` INTEGER NOT NULL, " +
+            "`updatedAt` INTEGER NOT NULL, " +
+            "PRIMARY KEY(`mediaId`, `seasonNumber`, `episodeNumber`))"
+        )
+      }
+    }
+
+    /**
+     * v4 -> v5: aggiunta di `lastWatchedAt` per ordinare "Continua a guardare"
+     * in ordine cronologico decrescente (più recente → meno recente).
+     */
+    private val MIGRATION_4_5 = object : Migration(4, 5) {
+      override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE cached_media_items ADD COLUMN lastWatchedAt INTEGER")
+      }
+    }
+
+    /**
+     * v5 -> v6: aggiunta di `ageRating` in `cached_media_items` per il
+     * controllo genitori (classificazione d'età normalizzata TMDB).
+     */
+    private val MIGRATION_5_6 = object : Migration(5, 6) {
+      override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE cached_media_items ADD COLUMN ageRating INTEGER")
+      }
+    }
+
+    /**
+     * v6 -> v7: aggiunta della tabella `last_working_streams`, cache locale dell'ultimo
+     * flusso funzionante per film/episodio (funzione "Riusa l'ultimo link").
+     */
+    private val MIGRATION_6_7 = object : Migration(6, 7) {
+      override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+          "CREATE TABLE IF NOT EXISTS `last_working_streams` (" +
+            "`mediaId` TEXT NOT NULL, " +
+            "`seasonNumber` INTEGER NOT NULL, " +
+            "`episodeNumber` INTEGER NOT NULL, " +
+            "`streamUrl` TEXT NOT NULL, " +
+            "`streamTitle` TEXT, " +
+            "`streamQuality` TEXT, " +
+            "`serverName` TEXT, " +
+            "`headersJson` TEXT, " +
+            "`isProgressive` INTEGER, " +
+            "`cachedAtTimestamp` INTEGER NOT NULL, " +
+            "PRIMARY KEY(`mediaId`, `seasonNumber`, `episodeNumber`))"
+        )
+      }
+    }
+
+    /**
+     * v7 -> v8: aggiunta di `streamMode` in `last_working_streams`. Traccia la modalità
+     * del motore (HTTP vs Debrid) che ha generato il flusso salvato: "Continua a guardare"
+     * non deve riusare una fonte appartenente a una modalità diversa da quella attiva.
+     */
+    private val MIGRATION_7_8 = object : Migration(7, 8) {
+      override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE last_working_streams ADD COLUMN streamMode TEXT")
+      }
+    }
+
+    /**
+     * v8 -> v9: identità della sorgente Debrid in `last_working_streams`
+     * (`infoHash`, `fileIdx`, `addonName`). Servono al passaggio all'episodio
+     * successivo: senza infoHash il torrent di stagione dell'episodio corrente non è
+     * più riutilizzabile quando la sessione riparte dalla cache "Riusa l'ultimo link".
+     */
+    internal val MIGRATION_8_9 = object : Migration(8, 9) {
+      override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE last_working_streams ADD COLUMN infoHash TEXT")
+        db.execSQL("ALTER TABLE last_working_streams ADD COLUMN fileIdx INTEGER")
+        db.execSQL("ALTER TABLE last_working_streams ADD COLUMN addonName TEXT")
+      }
+    }
+
+    /**
+     * v9 -> v10: colonne di PROVENIENZA per preferiti, progressi e schede importate
+     * (`favoriteSource`, `progressSource`, `importedFromSimkl` in `cached_media_items`;
+     * `source` in `episode_progress`). `NULL`/`0` = dato locale, `"simkl"` = adottato
+     * dalla sincronizzazione SIMKL: è la base della pulizia al logout, che rimuove SOLO
+     * i dati di provenienza SIMKL e PRESERVA tutti quelli locali.
+     *
+     * I record storici (scritti prima della migrazione) nascono `NULL`/`0`, cioè di
+     * proprietà LOCALE: la loro provenienza reale non è ricostruibile dal database v9,
+     * quindi vengono conservati (mai cancellati indiscriminatamente) — al primo logout
+     * un preferito/progresso importato da SIMKL in una versione precedente può restare
+     * visibile; la rimozione manuale dalla UI resta disponibile e sicura.
+     */
+    internal val MIGRATION_9_10 = object : Migration(9, 10) {
+      override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE cached_media_items ADD COLUMN favoriteSource TEXT")
+        db.execSQL("ALTER TABLE cached_media_items ADD COLUMN progressSource TEXT")
+        db.execSQL("ALTER TABLE cached_media_items ADD COLUMN importedFromSimkl INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE episode_progress ADD COLUMN source TEXT")
+      }
+    }
+
+    @Volatile
+    private var INSTANCE: StreamNovaDatabase? = null
+
+    fun init(context: Context): StreamNovaDatabase {
+      return INSTANCE ?: synchronized(this) {
+        INSTANCE ?: Room.databaseBuilder(
+          context.applicationContext,
+          StreamNovaDatabase::class.java,
+          "streamnova_database.db"
+        )
+          .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+          .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+          .build()
+          .also { INSTANCE = it }
+      }
+    }
+
+    fun getInstance(context: Context? = null): StreamNovaDatabase? {
+      if (INSTANCE != null) return INSTANCE
+      if (context != null) return init(context)
+      return null
+    }
+
+    fun setInstanceForTesting(db: StreamNovaDatabase?) {
+      INSTANCE = db
+    }
+  }
+}
